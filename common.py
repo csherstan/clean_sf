@@ -1,16 +1,9 @@
-import os
-import random
-import time
-from dataclasses import dataclass
+from typing import Callable
 
 import gymnasium as gym
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.distributions.normal import Normal
-from torch.utils.tensorboard import SummaryWriter
-from typing import Callable
+
 
 def make_env(env_id, idx, capture_video, run_name, gamma):
     def thunk():
@@ -39,21 +32,20 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 def evaluate_agent(
-    agent, #state_dict,
+    state_dict,
     make_env: Callable,
     env_id: str,
     eval_episodes: int,
     run_name: str,
-    Model: torch.nn.Module,
+    agent_generator: Callable,
     device: torch.device = torch.device("cpu"),
     capture_video: bool = False,
 ):
     print(f"evaluate_agent ({env_id})")
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, capture_video, run_name, gamma=0.99)])
-    # agent = Model(obs_space_shape = envs.single_observation_space.shape, action_space_shape = envs.single_action_space.shape).to(device)
-    # agent.load_state_dict(state_dict)
-    # agent.eval()
-    # agent.eval()
+    agent = agent_generator(envs).to(device)
+    agent.load_state_dict(state_dict)
+    agent.eval()
 
     obs, _ = envs.reset()
     episodic_returns = []
@@ -70,24 +62,22 @@ def evaluate_agent(
             episodic_lengths += [info["episode"]["l"]]
       obs = next_obs
 
-    # agent.train()
-
     return episodic_returns, episodic_lengths
 
 def eval_agent(agent: torch.nn.Module,
          env_id: str,
          eval_episodes: int,
          run_name: str,
-         Model: torch.nn.Module,
+         agent_generator: Callable,
          global_step: int,
          device: torch.device,
          writer):
-  episode_returns, episode_lengths = evaluate_agent(agent, #state_dict=agent.state_dict(),
+  episode_returns, episode_lengths = evaluate_agent(state_dict=agent.state_dict(),
                 make_env=make_env,
                 env_id=env_id,
                 eval_episodes=eval_episodes,
                 run_name=run_name,
-                Model=Model,
+                agent_generator=agent_generator,
                 device=device,
                 capture_video=False,
                 )

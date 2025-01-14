@@ -1,4 +1,3 @@
-import os
 import random
 import time
 from dataclasses import dataclass
@@ -10,7 +9,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
-from typing import Callable
 
 from common import layer_init, make_env, eval_agent
 
@@ -37,11 +35,11 @@ class Agent(nn.Module):
     def get_value(self, x):
         return self.critic(x)
 
-    def get_action_and_value(self, x, action=None, greedy: bool=False):
+    def get_action_and_value(self, x, action=None, greedy: bool = False):
         action_mean = self.actor_mean(x)
 
         if greedy:
-          action = action_mean
+            action = action_mean
 
         action_logstd = self.actor_logstd.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
@@ -49,6 +47,11 @@ class Agent(nn.Module):
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
+
+
+def agent_generator(envs):
+    return Agent(obs_space_shape=envs.single_observation_space.shape, action_space_shape=envs.single_action_space.shape)
+
 
 @dataclass
 class Args:
@@ -121,6 +124,7 @@ class Args:
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
+
 def baseline(args: Args):
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
@@ -160,7 +164,7 @@ def baseline(args: Args):
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-    agent = Agent(obs_space_shape = envs.single_observation_space.shape, action_space_shape = envs.single_action_space.shape).to(device)
+    agent = agent_generator(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -180,15 +184,15 @@ def baseline(args: Args):
 
     for iteration in range(1, args.num_iterations + 1):
 
-        if ((iteration -1) % args.eval_interval) == 0:
-          eval_agent(agent=agent,
-               env_id=args.env_id,
-               eval_episodes=10,
-               run_name=run_name,
-               Model=Agent,
-               global_step=global_step,
-               device=device,
-               writer=writer)
+        if ((iteration - 1) % args.eval_interval) == 0:
+            eval_agent(agent=agent,
+                       env_id=args.env_id,
+                       eval_episodes=10,
+                       run_name=run_name,
+                       agent_generator=agent_generator,
+                       global_step=global_step,
+                       device=device,
+                       writer=writer)
 
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -321,14 +325,13 @@ def baseline(args: Args):
         print(f"model saved to {model_path}")
 
     eval_agent(agent=agent,
-      env_id=args.env_id,
-      eval_episodes=10,
-      run_name=run_name,
-      Model=Agent,
-      global_step=global_step,
-      device=device,
-      writer=writer)
-
+               env_id=args.env_id,
+               eval_episodes=10,
+               run_name=run_name,
+               agent_generator=agent_generator,
+               global_step=global_step,
+               device=device,
+               writer=writer)
 
     # if args.upload_model:
     #     from cleanrl_utils.huggingface import push_to_hub

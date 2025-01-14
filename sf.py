@@ -1,4 +1,3 @@
-import os
 import random
 import time
 from dataclasses import dataclass
@@ -10,45 +9,45 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
-from typing import Callable
 
 from baseline import Args
 from common import layer_init, make_env, eval_agent
 
 
 class SRCritic(nn.Module):
-  def __init__(self, obs_space_shape, action_space_shape, phi_size: int):
-    super().__init__()
-    self.neck = nn.Sequential(
-      layer_init(nn.Linear(np.array(obs_space_shape).prod(), 64)),
-      nn.Tanh(),
-      layer_init(nn.Linear(64, phi_size)),
-      nn.Tanh(),
-    )
+    def __init__(self, obs_space_shape, action_space_shape, phi_size: int):
+        super().__init__()
+        self.neck = nn.Sequential(
+            layer_init(nn.Linear(np.array(obs_space_shape).prod(), 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, phi_size)),
+            nn.Tanh(),
+        )
 
-    self.head = nn.Sequential(
-      layer_init(nn.Linear(phi_size, 64)),
-      nn.Tanh(),
-      layer_init(nn.Linear(64, phi_size*2))
-    )
+        self.head = nn.Sequential(
+            layer_init(nn.Linear(phi_size, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, phi_size * 2))
+        )
 
-    self._phi_size = phi_size
+        self._phi_size = phi_size
 
-  def forward(self, x):
-    phi = self.neck(x)  # [batch, phi]
-    output = self.head(phi) # [batch, phi*2]
-    sf = output[:,0:self._phi_size] # [batch, phi]
-    w = output[:,self._phi_size:] # [batch, phi]
-    r = torch.einsum("bm,bm->b", phi, w)[...,None] # [batch, 1]
-    value = torch.einsum("bm,bm->b", sf, w)[..., None] # [batch, 1]
+    def forward(self, x):
+        phi = self.neck(x)  # [batch, phi]
+        output = self.head(phi)  # [batch, phi*2]
+        sf = output[:, 0:self._phi_size]  # [batch, phi]
+        w = output[:, self._phi_size:]  # [batch, phi]
+        r = torch.einsum("bm,bm->b", phi, w)[..., None]  # [batch, 1]
+        value = torch.einsum("bm,bm->b", sf, w)[..., None]  # [batch, 1]
 
-    return {"phi": phi, "sf": sf, "w": w, "r": r, "value": value}
+        return {"phi": phi, "sf": sf, "w": w, "r": r, "value": value}
 
 
 class Agent(nn.Module):
     def __init__(self, obs_space_shape, action_space_shape, phi_size: int):
         super().__init__()
-        self.critic = SRCritic(obs_space_shape=obs_space_shape, action_space_shape=action_space_shape, phi_size=phi_size)
+        self.critic = SRCritic(obs_space_shape=obs_space_shape, action_space_shape=action_space_shape,
+                               phi_size=phi_size)
         self.actor_mean = nn.Sequential(
             layer_init(nn.Linear(np.array(obs_space_shape).prod(), 64)),
             nn.Tanh(),
@@ -64,12 +63,12 @@ class Agent(nn.Module):
     def get_value(self, x):
         return self.critic(x)["value"]
 
-    def get_action_and_value_as_dict(self, x, action=None, greedy: bool=False):
+    def get_action_and_value_as_dict(self, x, action=None, greedy: bool = False):
 
         action_mean = self.actor_mean(x)
 
         if greedy:
-          action = action_mean
+            action = action_mean
 
         action_logstd = self.actor_logstd.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
@@ -83,11 +82,11 @@ class Agent(nn.Module):
 
         return outputs
 
-    def get_action_and_value(self, x, action=None, greedy: bool=False):
+    def get_action_and_value(self, x, action=None, greedy: bool = False):
         action_mean = self.actor_mean(x)
 
         if greedy:
-          action = action_mean
+            action = action_mean
 
         action_logstd = self.actor_logstd.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
@@ -100,6 +99,7 @@ class Agent(nn.Module):
         outputs.update(self.critic(x))
 
         return outputs["action"], outputs["logprob"], outputs["entropy"], outputs["value"]
+
 
 @dataclass
 class SFArgs(Args):
@@ -145,7 +145,8 @@ def sf_train_loop(args: SFArgs):
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-    agent = Agent(obs_space_shape = envs.single_observation_space.shape, action_space_shape = envs.single_action_space.shape, phi_size=args.phi_size).to(device)
+    agent = Agent(obs_space_shape=envs.single_observation_space.shape,
+                  action_space_shape=envs.single_action_space.shape, phi_size=args.phi_size).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -166,15 +167,15 @@ def sf_train_loop(args: SFArgs):
 
     for iteration in range(1, args.num_iterations + 1):
 
-        if ((iteration -1) % args.eval_interval) == 0:
-          eval_agent(agent=agent,
-               env_id=args.env_id,
-               eval_episodes=10,
-               run_name=run_name,
-               Model=Agent,
-               global_step=global_step,
-               device=device,
-               writer=writer)
+        if ((iteration - 1) % args.eval_interval) == 0:
+            eval_agent(agent=agent,
+                       env_id=args.env_id,
+                       eval_episodes=10,
+                       run_name=run_name,
+                       Model=Agent,
+                       global_step=global_step,
+                       device=device,
+                       writer=writer)
 
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -233,7 +234,7 @@ def sf_train_loop(args: SFArgs):
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
 
-                sf_targets[t] = phis[t] + args.gamma*nextnonterminal*next_sf # TODO
+                sf_targets[t] = phis[t] + args.gamma * nextnonterminal * next_sf  # TODO
             returns = advantages + values
 
         # flatten the batch
@@ -304,17 +305,18 @@ def sf_train_loop(args: SFArgs):
                 # SR loss
 
                 # reward prediction loss
-                reward_loss = 0.5*((new_r - b_rewards[mb_inds])**2).mean()
+                reward_loss = 0.5 * ((new_r - b_rewards[mb_inds]) ** 2).mean()
 
                 # sf prediction loss
-                sf_loss = 0.5*((new_sf - b_sf[mb_inds])**2).mean()
+                sf_loss = 0.5 * ((new_sf - b_sf[mb_inds]) ** 2).mean()
 
-                #---------------
+                # ---------------
 
                 entropy_loss = entropy.mean()
 
                 # TODO: clean this up
-                loss = 0.0*(pg_loss - args.ent_coef * entropy_loss) + v_loss * args.vf_coef + args.vf_coef*(reward_loss + sf_loss)
+                loss = 0.0 * (pg_loss - args.ent_coef * entropy_loss) + v_loss * args.vf_coef + args.vf_coef * (
+                        reward_loss + sf_loss)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -348,14 +350,13 @@ def sf_train_loop(args: SFArgs):
         print(f"model saved to {model_path}")
 
     eval_agent(agent=agent,
-      env_id=args.env_id,
-      eval_episodes=10,
-      run_name=run_name,
-      Model=Agent,
-      global_step=global_step,
-      device=device,
-      writer=writer)
-
+               env_id=args.env_id,
+               eval_episodes=10,
+               run_name=run_name,
+               Model=Agent,
+               global_step=global_step,
+               device=device,
+               writer=writer)
 
     # if args.upload_model:
     #     from cleanrl_utils.huggingface import push_to_hub
@@ -366,5 +367,6 @@ def sf_train_loop(args: SFArgs):
 
     envs.close()
     writer.close()
+
 
 sf_train_loop(SFArgs("sf"))
