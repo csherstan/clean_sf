@@ -1,0 +1,145 @@
+{
+    "os": "Linux-6.1.0-1029-oem-x86_64-with-glibc2.35",
+    "python": "3.10.12",
+    "heartbeatAt": "2025-01-14T14:02:51.793364",
+    "startedAt": "2025-01-14T14:02:50.928481",
+    "docker": null,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "/home/sherstancraig/work/clean_sr/baseline.py",
+    "codePath": "baseline.py",
+    "git": {
+        "remote": null,
+        "commit": null
+    },
+    "email": "craig.sherstan@gmail.com",
+    "root": "/home/sherstancraig/work/clean_sr",
+    "host": "Development-L-2020-0006",
+    "username": "sherstancraig",
+    "executable": "/home/sherstancraig/work/clean_sr/.venv/bin/python",
+    "cpu_count": 14,
+    "cpu_count_logical": 20,
+    "cpu_freq": {
+        "current": 2078.0786000000003,
+        "min": 400.0,
+        "max": 4180.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 3854.69,
+            "min": 400.0,
+            "max": 4600.0
+        },
+        {
+            "current": 2651.714,
+            "min": 400.0,
+            "max": 4600.0
+        },
+        {
+            "current": 3664.917,
+            "min": 400.0,
+            "max": 4600.0
+        },
+        {
+            "current": 400.0,
+            "min": 400.0,
+            "max": 4600.0
+        },
+        {
+            "current": 4071.69,
+            "min": 400.0,
+            "max": 4700.0
+        },
+        {
+            "current": 400.0,
+            "min": 400.0,
+            "max": 4700.0
+        },
+        {
+            "current": 4093.705,
+            "min": 400.0,
+            "max": 4700.0
+        },
+        {
+            "current": 4038.603,
+            "min": 400.0,
+            "max": 4700.0
+        },
+        {
+            "current": 3922.736,
+            "min": 400.0,
+            "max": 4600.0
+        },
+        {
+            "current": 806.997,
+            "min": 400.0,
+            "max": 4600.0
+        },
+        {
+            "current": 4145.584,
+            "min": 400.0,
+            "max": 4600.0
+        },
+        {
+            "current": 3487.956,
+            "min": 400.0,
+            "max": 4600.0
+        },
+        {
+            "current": 1895.074,
+            "min": 400.0,
+            "max": 3500.0
+        },
+        {
+            "current": 1590.308,
+            "min": 400.0,
+            "max": 3500.0
+        },
+        {
+            "current": 2700.197,
+            "min": 400.0,
+            "max": 3500.0
+        },
+        {
+            "current": 2124.21,
+            "min": 400.0,
+            "max": 3500.0
+        },
+        {
+            "current": 2927.451,
+            "min": 400.0,
+            "max": 3500.0
+        },
+        {
+            "current": 3309.854,
+            "min": 400.0,
+            "max": 3500.0
+        },
+        {
+            "current": 1390.533,
+            "min": 400.0,
+            "max": 3500.0
+        },
+        {
+            "current": 2576.915,
+            "min": 400.0,
+            "max": 3500.0
+        }
+    ],
+    "disk": {
+        "total": 937.3305015563965,
+        "used": 659.4393653869629
+    },
+    "gpu": "NVIDIA GeForce RTX 3080 Ti Laptop GPU",
+    "gpu_count": 1,
+    "gpu_devices": [
+        {
+            "name": "NVIDIA GeForce RTX 3080 Ti Laptop GPU",
+            "memory_total": 17179869184
+        }
+    ],
+    "memory": {
+        "total": 62.48270797729492
+    }
+}
