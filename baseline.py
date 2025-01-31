@@ -1,3 +1,4 @@
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -11,6 +12,10 @@ from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
 
 from common import layer_init, make_env, eval_agent
+
+import dm_control
+
+import tyro
 
 
 class Agent(nn.Module):
@@ -55,7 +60,7 @@ def agent_generator(envs):
 
 @dataclass
 class Args:
-    exp_name: str
+    exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
     seed: int = 1
     """seed of the experiment"""
@@ -79,7 +84,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "LunarLanderContinuous-v2"
+    env_id: str = "dm_control/cartpole-swingup_sparse-v0"
     """the id of the environment"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
@@ -344,4 +349,4 @@ def baseline(args: Args):
     writer.close()
 
 
-baseline(Args("baseline"))
+baseline(tyro.cli(Args))
