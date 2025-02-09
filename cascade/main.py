@@ -1,142 +1,33 @@
-import os
 import random
 import time
-from dataclasses import dataclass
+from functools import partial
 
 import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.distributions.normal import Normal
+import tyro
 from torch.utils.tensorboard import SummaryWriter
 
-from common import layer_init, make_env, eval_agent
-
-import dm_control
-
-import tyro
-
-
-class Agent(nn.Module):
-    def __init__(self, obs_space_shape, action_space_shape):
-        super().__init__()
-        self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(obs_space_shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 1), std=1.0),
-        )
-        self.actor_mean = nn.Sequential(
-            layer_init(nn.Linear(np.array(obs_space_shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, np.prod(action_space_shape)), std=0.01),
-        )
-        self.actor_logstd = nn.Parameter(torch.zeros(1, np.prod(action_space_shape)))
-
-    def get_value(self, x):
-        return self.critic(x)
-
-    def get_action_and_value(self, x, action=None, greedy: bool = False):
-        action_mean = self.actor_mean(x)
-
-        if greedy:
-            action = action_mean
-
-        action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd)
-        probs = Normal(action_mean, action_std)
-        if action is None:
-            action = probs.sample()
-        return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
+from cascade.agent import Agent
+from cascade.args import Args
+from common import make_env, Mode, set_seed, eval_agent_direct, eval_agent_with_logging, \
+    save_model
 
 
-def agent_generator(envs):
-    return Agent(obs_space_shape=envs.single_observation_space.shape, action_space_shape=envs.single_action_space.shape)
+def agent_generator(envs, args: Args):
+    return Agent(obs_space_shape=envs.single_observation_space.shape, action_space_shape=envs.single_action_space.shape, num_gammas=len(args.gammas))
 
-
-@dataclass
-class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    """the name of this experiment"""
-    seed: int = 1
-    """seed of the experiment"""
-    torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = False
-    """if toggled, cuda will be enabled by default"""
-    track: bool = True
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanSR"
-    """the wandb's project name"""
-    wandb_entity: str = "csherstan-team"
-    """the entity (team) of wandb's project"""
-    capture_video: bool = False
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
-    save_model: bool = False
-    """whether to save model into the `runs/{run_name}` folder"""
-    upload_model: bool = False
-    """whether to upload the saved model to huggingface"""
-    hf_entity: str = ""
-    """the user or org name of the model repository from the Hugging Face Hub"""
-
-    # Algorithm specific arguments
-    env_id: str = "dm_control/cartpole-swingup_sparse-v0"
-    """the id of the environment"""
-    total_timesteps: int = 1000000
-    """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
-    """the learning rate of the optimizer"""
-    num_envs: int = 4
-    """the number of parallel game environments"""
-    num_steps: int = 2048
-    """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
-    """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.99
-    """the discount factor gamma"""
-    gae_lambda: float = 0.95
-    """the lambda for the general advantage estimation"""
-    num_minibatches: int = 32
-    """the number of mini-batches"""
-    update_epochs: int = 10
-    """the K epochs to update the policy"""
-    norm_adv: bool = True
-    """Toggles advantages normalization"""
-    clip_coef: float = 0.2
-    """the surrogate clipping coefficient"""
-    clip_vloss: bool = True
-    """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.0
-    """coefficient of the entropy"""
-    vf_coef: float = 0.5
-    """coefficient of the value function"""
-    max_grad_norm: float = 0.5
-    """the maximum norm for the gradient clipping"""
-    target_kl: float = None
-    """the target KL divergence threshold"""
-    eval_interval: int = 10
-    """how frequently to eval the policy"""
-
-    # to be filled in runtime
-    batch_size: int = 0
-    """the batch size (computed in runtime)"""
-    minibatch_size: int = 0
-    """the mini-batch size (computed in runtime)"""
-    num_iterations: int = 0
-    """the number of iterations (computed in runtime)"""
-
-
-def baseline(args: Args):
+def main(args: Args):
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
     print(f"num_iterations={args.num_iterations}")
 
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    seed = set_seed(args.seed, args.torch_deterministic)
+
+    run_name = f"{args.env_id}__{args.exp_name}__{seed}__{int(time.time())}"
     if args.track:
         import wandb
 
@@ -155,12 +46,6 @@ def baseline(args: Args):
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
-
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
@@ -169,7 +54,7 @@ def baseline(args: Args):
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-    agent = agent_generator(envs).to(device)
+    agent = agent_generator(envs, args).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -179,22 +64,25 @@ def baseline(args: Args):
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    cascade_final_values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    cascade_values = torch.zeros((args.num_steps, args.num_envs, len(args.gammas))).to(device)
+    gammas_tensor = torch.tensor(args.gammas).to(device)
+    num_gammas = len(args.gammas)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs, _ = envs.reset(seed=args.seed)
+    next_obs, _ = envs.reset(seed=seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
     for iteration in range(1, args.num_iterations + 1):
 
         if ((iteration - 1) % args.eval_interval) == 0:
-            eval_agent(agent=agent,
+            eval_agent_with_logging(agent=agent,
                        env_id=args.env_id,
-                       eval_episodes=10,
+                       eval_episodes=args.eval_episodes,
                        run_name=run_name,
-                       agent_generator=agent_generator,
                        global_step=global_step,
                        device=device,
                        writer=writer)
@@ -212,13 +100,15 @@ def baseline(args: Args):
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
-                values[step] = value.flatten()
-            actions[step] = action
-            logprobs[step] = logprob
+                result = agent.get_action_and_value(next_obs)
+                values[step] = result.value.flatten()
+                cascade_final_values[step] = result.cascade_final_value.flatten()
+                cascade_values[step] = result.cascade_values
+            actions[step] = result.action
+            logprobs[step] = result.logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
+            next_obs, reward, terminations, truncations, infos = envs.step(result.action.cpu().numpy())
             next_done = np.logical_or(terminations, truncations)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
@@ -231,20 +121,31 @@ def baseline(args: Args):
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
         # bootstrap value if not done
-        with torch.no_grad():
-            next_value = agent.get_value(next_obs).reshape(1, -1)
+        with (torch.no_grad()):
+            val_result = agent.get_value(next_obs)
+            next_value, next_cascade_final_value, next_cascade_values = val_result.value.reshape(1, -1), \
+                val_result.cascade_final_value, val_result.cascade_values
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
+            cascade_advantages = torch.zeros_like(cascade_values).to(device)
+            cascade_lastgaelam = torch.zeros((cascade_values.shape[1:])).to(device)
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
                     nextnonterminal = 1.0 - next_done
                     nextvalues = next_value
+                    nextcascade_values = next_cascade_values
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
+                    nextcascade_values = cascade_values[t + 1]
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+
+                cascade_delta = rewards[t].unsqueeze(-1) + args.gamma*nextcascade_values*nextnonterminal.unsqueeze(-1) - cascade_values[t]
+                cascade_advantages[t] = cascade_lastgaelam = cascade_delta + args.gamma*args.gae_lambda * nextnonterminal.unsqueeze(-1)*cascade_lastgaelam
+
             returns = advantages + values
+            cascade_returns = cascade_advantages + cascade_values
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
@@ -253,6 +154,8 @@ def baseline(args: Args):
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
+        b_value_heads = cascade_values.reshape(-1, num_gammas)
+        b_cascade_returns = cascade_returns.reshape(-1, num_gammas)
 
         # Optimizing the policy and value network
         b_inds = np.arange(args.batch_size)
@@ -263,7 +166,11 @@ def baseline(args: Args):
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
+                result = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
+                newlogprob = result.logprob
+                entropy = result.entropy
+                newvalue = result.value
+                newcascade_values = result.cascade_values
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
@@ -284,6 +191,7 @@ def baseline(args: Args):
 
                 # Value loss
                 newvalue = newvalue.view(-1)
+                newcascade_values = newcascade_values.view(-1, num_gammas)
                 if args.clip_vloss:
                     v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
                     v_clipped = b_values[mb_inds] + torch.clamp(
@@ -294,11 +202,23 @@ def baseline(args: Args):
                     v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
                     v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
                     v_loss = 0.5 * v_loss_max.mean()
+
+                    cascade_v_loss_unclipped = (newcascade_values - b_cascade_returns[mb_inds])**2
+                    cascade_v_clipped = b_value_heads[mb_inds] + torch.clamp(
+                        newcascade_values - b_value_heads[mb_inds],
+                        -args.clip_coef,
+                        args.clip_coef,
+                    )
+
+                    cascade_v_loss_clipped = (cascade_v_clipped - b_cascade_returns[mb_inds]) ** 2
+                    cascade_v_loss_max = torch.max(cascade_v_loss_unclipped, cascade_v_loss_clipped)
+                    cascade_v_loss = 0.5 * cascade_v_loss_max.mean(0)
                 else:
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                    cascade_v_loss = 0.5 * ((newcascade_values - b_cascade_returns[mb_inds])**2).mean(0)
 
                 entropy_loss = entropy.mean()
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+                loss = pg_loss - args.ent_coef * entropy_loss + (v_loss.mean() + cascade_v_loss.mean()) * args.vf_coef
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -314,7 +234,9 @@ def baseline(args: Args):
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
+        for i in range(num_gammas):
+            writer.add_scalar(f"losses/value_loss_{args.gammas[i]}", cascade_v_loss[i].item(), global_step)
+        writer.add_scalar(f"losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
         writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
         writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
@@ -325,15 +247,12 @@ def baseline(args: Args):
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     if args.save_model:
-        model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
-        torch.save(agent.state_dict(), model_path)
-        print(f"model saved to {model_path}")
+        save_model(run_name, global_step, args.exp_name, agent)
 
-    eval_agent(agent=agent,
+    eval_agent_with_logging(agent=agent,
                env_id=args.env_id,
-               eval_episodes=10,
+               eval_episodes=args.eval_episodes,
                run_name=run_name,
-               agent_generator=agent_generator,
                global_step=global_step,
                device=device,
                writer=writer)
@@ -349,4 +268,18 @@ def baseline(args: Args):
     writer.close()
 
 
-baseline(tyro.cli(Args))
+if __name__=="__main__":
+    args = tyro.cli(Args)
+    if args.mode == Mode.TRAIN:
+        main(args)
+    else:
+        set_seed(args.seed, args.torch_deterministic)
+
+        model_dict = torch.load(args.load_model_path)
+        envs = gym.vector.SyncVectorEnv([make_env(args.env_id, 0, False, "eval", gamma=1.0)])
+        agent: nn.Module = agent_generator(envs)
+        agent.load_state_dict(model_dict)
+
+        eval_returns, eval_lengths = eval_agent_direct(agent, envs, args.eval_episodes, greedy=False,
+                                                       device=torch.device("cpu"))
+        print(f"avg return {np.array(eval_returns).mean()}, avg_length {np.array(eval_lengths).mean()}")
