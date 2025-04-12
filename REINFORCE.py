@@ -9,7 +9,7 @@ from tqdm import tqdm
 import gymnasium as gym
 import numpy as np
 
-from common import layer_init
+from clean_sr.common import layer_init
 
 
 class GaussianPolicy(nn.Module):
