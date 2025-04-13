@@ -31,6 +31,7 @@ def training_step(
     returns: torch.Tensor,
     rewards: torch.Tensor,
     sf_targets: torch.Tensor,
+    sf_predictions: torch.Tensor,
     values: torch.Tensor,
     optimizer: torch.optim.Optimizer,
     obs_space,
@@ -66,7 +67,8 @@ def training_step(
     b_returns = returns.reshape(-1)
     b_values = values.reshape(-1)
     b_rewards = rewards.reshape(-1)
-    b_sf = sf_targets.reshape((-1, args.phi_size))
+    b_sf_targets = sf_targets.reshape((-1, args.phi_size))
+    b_sf_predictions = sf_predictions.reshape((-1, args.phi_size))
 
     # Optimizing the policy and value network
     b_inds = np.arange(args.batch_size)
@@ -125,13 +127,13 @@ def training_step(
             reward_loss = 0.5 * ((new_r - b_rewards[mb_inds]) ** 2).mean()
 
             # sf prediction loss
-            sf_loss = 0.5 * ((new_sf - b_sf[mb_inds]) ** 2).mean()
+            sf_loss = 0.5 * ((new_sf - b_sf_targets[mb_inds]) ** 2).mean()
 
             # ---------------
 
             entropy_loss = entropy.mean()
 
-            loss = (pg_loss - args.ent_coef * entropy_loss) + v_loss * args.vf_coef + args.vf_coef * (
+            loss = (args.policy_coef*pg_loss - args.ent_coef * entropy_loss) + v_loss * args.vf_coef + args.sf_coef * (
                 reward_loss + sf_loss)
 
             optimizer.zero_grad()
@@ -146,6 +148,10 @@ def training_step(
     var_y = np.var(y_true)
     explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
+    y_sf_pred, y_sf_true = b_sf_predictions.cpu().numpy(), b_sf_targets.cpu().numpy()
+    var_sf = np.var(y_sf_true)
+    explained_var_sf = np.nan if var_sf == 0 else 1 - np.var(y_sf_true - y_sf_pred) / var_sf
+
     return {
         "losses/value_loss": v_loss.item(),
         "losses/policy_loss": pg_loss.item(),
@@ -154,9 +160,53 @@ def training_step(
         "losses/approx_kl": approx_kl.item(),
         "losses/clipfrac": np.mean(clipfracs),
         "losses/explained_variance": explained_var,
+        "losses/explained_var_sf": explained_var_sf,
         "losses/reward": reward_loss.item(),
         "losses/sf": sf_loss.item(),
     }
+
+def compute_returns(rewards: torch.Tensor,
+                    phis: torch.Tensor,
+                    dones: torch.Tensor,
+                    values: torch.Tensor,
+                    sf_predictions: torch.Tensor,
+                    next_done: torch.Tensor,
+                    next_value, next_sf: torch.Tensor,
+                    gamma: float,
+                    gae_lambda: float,
+                    num_steps: int,
+                    device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+
+    :param rewards: Shape [batch, num_envs]
+    :param phis: features of the network. Shape [batch, num_envs, phi_dim]
+    :param dones:   Shape [batch, num_envs]
+    :param values: Shape [batch, num_envs]
+    :param sf_predictions: successor feature predictions: E[phi + gamma*SF(t+1)]. Shape [batch, num_envs, phi_dim]
+    :param next_done:   Shape [num_envs,]
+    :param next_value: Shape [num_envs,]
+    :param next_sf: Shape [num_envs, phi_dim]
+    :param device:
+    :return:
+    """
+    advantages = torch.zeros_like(rewards).to(device)
+    sf_targets = torch.zeros_like(phis).to(device)
+    lastgaelam = 0
+    for t in reversed(range(num_steps)):
+        if t == num_steps - 1:
+            nextnonterminal = 1.0 - next_done
+            nextvalues = next_value
+        else:
+            nextnonterminal = 1.0 - dones[t + 1]
+            nextvalues = values[t + 1]
+            next_sf = sf_predictions[t + 1]
+        delta = rewards[t] + gamma * nextvalues * nextnonterminal - values[t]
+        advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
+
+        sf_targets[t] = phis[t] + gamma * nextnonterminal.unsqueeze(-1) * next_sf
+    returns = advantages + values
+
+    return returns, advantages, sf_targets
 
 def main(args: Args):
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -195,7 +245,13 @@ def main(args: Args):
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     agent = agent_generator(envs, args).to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+
+    for param in agent.critic.neck.parameters():
+        param.requires_grad = False
+
+    optimizer_params = [param for param in agent.parameters() if param.requires_grad]
+
+    optimizer = optim.Adam(optimizer_params, lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -205,6 +261,7 @@ def main(args: Args):
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
     phis = torch.zeros((args.num_steps, args.num_envs, args.phi_size)).to(device)
+    sf_predictions = torch.zeros((args.num_steps, args.num_envs, args.phi_size)).to(device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -237,11 +294,13 @@ def main(args: Args):
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                result = agent.get_action_and_value(next_obs)
+                # TODO: set greedy=False once testing is complete.
+                result = agent.get_action_and_value(next_obs, greedy=True)
             actions[step] = result.action
             logprobs[step] = result.logprob
             values[step] = result.value.flatten()
             phis[step] = result.sr_output.phi
+            sf_predictions[step] = result.sr_output.sf
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(result.action.cpu().numpy())
@@ -264,24 +323,27 @@ def main(args: Args):
         # SF delta = phi_t + gamma*SF(o_{t+1}) - SF(o_t)
         with torch.no_grad():
             critic_output = agent.get_critic(next_obs)
-            next_value = critic_output.value.reshape(1, -1)
+            next_value = critic_output.value.reshape(-1)
             next_sf = critic_output.sf
 
-            advantages = torch.zeros_like(rewards).to(device)
-            sf_targets = torch.zeros_like(phis).to(device)
-            lastgaelam = 0
-            for t in reversed(range(args.num_steps)):
-                if t == args.num_steps - 1:
-                    nextnonterminal = 1.0 - next_done
-                    nextvalues = next_value
-                else:
-                    nextnonterminal = 1.0 - dones[t + 1]
-                    nextvalues = values[t + 1]
-                delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+            returns, advantages, sf_targets = compute_returns(rewards, phis, dones, values, sf_predictions, next_done, next_value, next_sf, device)
 
-                sf_targets[t] = phis[t] + args.gamma * nextnonterminal.unsqueeze(-1) * next_sf
-            returns = advantages + values
+            # advantages = torch.zeros_like(rewards).to(device)
+            # sf_targets = torch.zeros_like(phis).to(device)
+            # lastgaelam = 0
+            # for t in reversed(range(args.num_steps)):
+            #     if t == args.num_steps - 1:
+            #         nextnonterminal = 1.0 - next_done
+            #         nextvalues = next_value
+            #     else:
+            #         nextnonterminal = 1.0 - dones[t + 1]
+            #         nextvalues = values[t + 1]
+            #         next_sf = sf_predictions[t + 1]
+            #     delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
+            #     advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+            #
+            #     sf_targets[t] = phis[t] + args.gamma * nextnonterminal.unsqueeze(-1) * next_sf
+            # returns = advantages + values
 
         step_results = training_step(
             args=args,
@@ -293,6 +355,7 @@ def main(args: Args):
             returns=returns,
             rewards=rewards,
             sf_targets=sf_targets,
+            sf_predictions=sf_predictions,
             values=values,
             optimizer=optimizer,
             obs_space=envs.single_observation_space,

@@ -59,10 +59,14 @@ class Args:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
+    policy_coef: float = 1.0
+    """weight placed on policy loss. Set to 0.0 to hold the policy static."""
     ent_coef: float = 0.0
     """coefficient of the entropy"""
     vf_coef: float = 0.5
-    """coefficient of the value function"""
+    """weight placed on the value loss"""
+    sf_coef: float = 1.0
+    """weight placed on the sf losses: r, sf"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
     target_kl: float = None

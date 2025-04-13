@@ -10,6 +10,11 @@ April 13, 2025
   - I think I have the equations for the SR and value correct, but I should double check.
     - confirmed correct. checked w/ Barreto, A., Munos, R., Schaul, T., & Silver, D. (2017). Successor Features for
     Transfer in Reinforcement Learning. Conference on Neural Information Processing Systems (NeurIPS), 4055–4065.
+  - I froze the policy and the next of the sr, the loss behavior isn't what I would have expected. While it initially
+  decreases, it plateaus early and doesn't make any more progress.
+  - Factored out `compute_returns` and added a unit test.
+  - Right now we've got a problem with the SR blowing up.
+
 
 - General thought, I don't understand how other developers seem to write code in this way where everything is just
  written in a single flow - I want to split things up so they can be easily tested with unit tests.

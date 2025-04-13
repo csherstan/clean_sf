@@ -40,21 +40,35 @@ class SRCritic(nn.Module):
             nn.Tanh(),
         )
 
-        # I've combined output of w and SR here, but maybe I shouldn't, their gradients will interact and
-        # weights end up shared.
-        self.head = nn.Sequential(
+        # # I've combined output of w and SR here, but maybe I shouldn't, their gradients will interact and
+        # # weights end up shared.
+        # self.head = nn.Sequential(
+        #     layer_init(nn.Linear(phi_size, 64)),
+        #     nn.Tanh(),
+        #     layer_init(nn.Linear(64, phi_size * 2))
+        # )
+
+        self.w_head = nn.Sequential(
             layer_init(nn.Linear(phi_size, 64)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, phi_size * 2))
+            layer_init(nn.Linear(64, phi_size))
+        )
+
+        self.sf_head = nn.Sequential(
+            layer_init(nn.Linear(phi_size, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, phi_size))
         )
 
         self._phi_size = phi_size
 
     def forward(self, x) -> SROutput:
         phi = self.neck(x)  # [batch, phi]
-        output = self.head(phi)  # [batch, phi*2]
-        sf = output[:, 0:self._phi_size]  # [batch, phi]
-        w = output[:, self._phi_size:]  # [batch, phi]
+        sf = self.sf_head(phi) # [batch, phi]
+        w = self.w_head(phi) # [batch, phi]
+        # output = self.head(phi)  # [batch, phi*2]
+        # sf = output[:, 0:self._phi_size]  # [batch, phi]
+        # w = output[:, self._phi_size:]  # [batch, phi]
         r = torch.einsum("bm,bm->b", phi, w)[..., None]  # [batch, 1]
         value = torch.einsum("bm,bm->b", sf, w)[..., None]  # [batch, 1]
 
