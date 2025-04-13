@@ -11,15 +11,21 @@ from clean_sr.common import ActionAndValue, layer_init
 
 @dataclasses.dataclass()
 class ActionAndCascade(ActionAndValue):
-    cascade_final_value: Any  # prediction for the final head - the timescale of interest
-    cascade_values: Any
+    cascade_final_value: torch.Tensor
+    """
+    This is the prediction for the final head, this is the timescale of interest.
+    """
+    cascade_values: torch.Tensor
+    """
+    Output of all the heads
+    """
 
 
 @dataclasses.dataclass()
 class ValueAndCascade():
-    value: Any
-    cascade_final_value: Any
-    cascade_values: Any
+    value: torch.Tensor
+    cascade_final_value: torch.Tensor
+    cascade_values: torch.Tensor
 
 
 class Agent(nn.Module):
@@ -48,13 +54,13 @@ class Agent(nn.Module):
         )
         self.actor_logstd = nn.Parameter(torch.zeros(1, np.prod(action_space_shape)))
 
-    def get_value(self, x):
+    def get_value(self, x: torch.Tensor) -> ValueAndCascade:
         cascade_heads = self.cascade(x)
         cascade_values = torch.cumsum(cascade_heads, 1)
         # return values, values[...,-1]
         return ValueAndCascade(value=self.critic(x), cascade_final_value=cascade_values[...,-1], cascade_values=cascade_values)
 
-    def get_action_and_value(self, x, action=None, greedy: bool = False):
+    def get_action_and_value(self, x: torch.Tensor, action=None, greedy: bool = False) -> ActionAndCascade:
         action_mean = self.actor_mean(x)
 
         if greedy:

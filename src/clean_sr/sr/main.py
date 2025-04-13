@@ -9,17 +9,17 @@ import torch.optim as optim
 import tyro
 from torch.utils.tensorboard import SummaryWriter
 
-from clean_sr.baseline.agent import Agent
-from clean_sr.baseline.args import Args
+from clean_sr.sr.agent import Agent
+from clean_sr.sr.args import Args
 from clean_sr.common import make_env, save_model, eval_agent_with_logging, Mode, eval_agent_direct, set_seed
 
 
-def agent_generator(envs):
+def agent_generator(envs, args: Args):
     return Agent(
         obs_space_shape=envs.single_observation_space.shape,
         action_space_shape=envs.single_action_space.shape,
+        phi_size=args.phi_size,
     )
-
 
 def training_step(
     args: Args,
@@ -29,10 +29,35 @@ def training_step(
     actions: torch.Tensor,
     advantages: torch.Tensor,
     returns: torch.Tensor,
+    rewards: torch.Tensor,
+    sf_targets: torch.Tensor,
     values: torch.Tensor,
     optimizer: torch.optim.Optimizer,
     obs_space,
     action_space):
+    """
+    Let phi be the "features" of the critic network,
+    the \psi(\phi_t) = E[\phi_t + \gamma \psi(\phi_{t+1})]
+    \bar{r}_t = \phi_t^T w
+    v_t = \psi_t^T w
+
+    :param args:
+    :param agent:
+    :param obs:
+    :param logprobs:
+    :param actions:
+    :param advantages:
+    :param returns:
+    :param rewards:
+        We need the raw rewards to be able to learn the one-step expected reward
+    :param sf_targets:
+        An SF target is the bootstrapped return for the SF
+    :param values:
+    :param optimizer:
+    :param obs_space:
+    :param action_space:
+    :return:
+    """
     # flatten the batch
     b_obs = obs.reshape((-1,) + obs_space.shape)
     b_logprobs = logprobs.reshape(-1)
@@ -40,6 +65,8 @@ def training_step(
     b_advantages = advantages.reshape(-1)
     b_returns = returns.reshape(-1)
     b_values = values.reshape(-1)
+    b_rewards = rewards.reshape(-1)
+    b_sf = sf_targets.reshape((-1, args.phi_size))
 
     # Optimizing the policy and value network
     b_inds = np.arange(args.batch_size)
@@ -52,6 +79,7 @@ def training_step(
 
             action_and_value = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
             newlogprob, entropy, newvalue = action_and_value.logprob, action_and_value.entropy, action_and_value.value
+            new_r, new_sf = action_and_value.sr_output.r, action_and_value.sr_output.sf
             logratio = newlogprob - b_logprobs[mb_inds]
             ratio = logratio.exp()
 
@@ -71,6 +99,12 @@ def training_step(
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
             # Value loss
+            """
+            For the SF training there are potentially 3 losses we can use:
+            1. Loss for the SF
+            2. Loss for the reward prediction
+            3. Loss for the value prediction.
+            """
             newvalue = newvalue.view(-1)
             if args.clip_vloss:
                 v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
@@ -85,8 +119,20 @@ def training_step(
             else:
                 v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
+            # SR loss
+
+            # reward prediction loss
+            reward_loss = 0.5 * ((new_r - b_rewards[mb_inds]) ** 2).mean()
+
+            # sf prediction loss
+            sf_loss = 0.5 * ((new_sf - b_sf[mb_inds]) ** 2).mean()
+
+            # ---------------
+
             entropy_loss = entropy.mean()
-            loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+
+            loss = (pg_loss - args.ent_coef * entropy_loss) + v_loss * args.vf_coef + args.vf_coef * (
+                reward_loss + sf_loss)
 
             optimizer.zero_grad()
             loss.backward()
@@ -107,9 +153,10 @@ def training_step(
         "losses/old_approx_kl": old_approx_kl.item(),
         "losses/approx_kl": approx_kl.item(),
         "losses/clipfrac": np.mean(clipfracs),
-        "losses/explained_variance": explained_var
+        "losses/explained_variance": explained_var,
+        "losses/reward": reward_loss.item(),
+        "losses/sf": sf_loss.item(),
     }
-
 
 def main(args: Args):
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -147,9 +194,8 @@ def main(args: Args):
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-    agent = agent_generator(envs).to(device)
+    agent = agent_generator(envs, args).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
-    # training_step = torch.compile(training_step)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -158,6 +204,7 @@ def main(args: Args):
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    phis = torch.zeros((args.num_steps, args.num_envs, args.phi_size)).to(device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -170,12 +217,12 @@ def main(args: Args):
 
         if ((iteration - 1) % args.eval_interval) == 0:
             eval_agent_with_logging(agent=agent,
-                                    env_id=args.env_id,
-                                    eval_episodes=args.eval_episodes,
-                                    run_name=run_name,
-                                    global_step=global_step,
-                                    device=device,
-                                    writer=writer)
+                       env_id=args.env_id,
+                       eval_episodes=args.eval_episodes,
+                       run_name=run_name,
+                       global_step=global_step,
+                       device=device,
+                       writer=writer)
 
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -191,13 +238,13 @@ def main(args: Args):
             # ALGO LOGIC: action logic
             with torch.no_grad():
                 result = agent.get_action_and_value(next_obs)
-                action, logprob, value = result.action, result.logprob, result.value
-                values[step] = value.flatten()
-            actions[step] = action
-            logprobs[step] = logprob
+            actions[step] = result.action
+            logprobs[step] = result.logprob
+            values[step] = result.value.flatten()
+            phis[step] = result.sr_output.phi
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
+            next_obs, reward, terminations, truncations, infos = envs.step(result.action.cpu().numpy())
             next_done = np.logical_or(terminations, truncations)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
@@ -208,11 +255,20 @@ def main(args: Args):
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+        writer.add_scalar("charts/mean_phi_mag", phis.abs().mean(), global_step)
 
         # bootstrap value if not done
+        # In PPO the advantage is computed once before the epoch training loop rather than after each update step.
+        # I guess something similar should be done for the SF based targets:
+        #   - Compute the SF return once before the epoch training loop
+        # SF delta = phi_t + gamma*SF(o_{t+1}) - SF(o_t)
         with torch.no_grad():
-            next_value = agent.get_value(next_obs).reshape(1, -1)
+            critic_output = agent.get_critic(next_obs)
+            next_value = critic_output.value.reshape(1, -1)
+            next_sf = critic_output.sf
+
             advantages = torch.zeros_like(rewards).to(device)
+            sf_targets = torch.zeros_like(phis).to(device)
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
@@ -221,10 +277,10 @@ def main(args: Args):
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
-
-                # originally
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+
+                sf_targets[t] = phis[t] + args.gamma * nextnonterminal.unsqueeze(-1) * next_sf
             returns = advantages + values
 
         step_results = training_step(
@@ -235,6 +291,8 @@ def main(args: Args):
             actions=actions,
             advantages=advantages,
             returns=returns,
+            rewards=rewards,
+            sf_targets=sf_targets,
             values=values,
             optimizer=optimizer,
             obs_space=envs.single_observation_space,

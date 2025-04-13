@@ -28,6 +28,7 @@ def main(args: Args):
     print(f"num_iterations={args.num_iterations}")
 
     seed = set_seed(args.seed, args.torch_deterministic)
+    args.seed = seed
 
     run_name = f"{args.env_id}__{args.exp_name}__{seed}__{int(time.time())}"
     if args.track:
@@ -82,12 +83,12 @@ def main(args: Args):
 
         if ((iteration - 1) % args.eval_interval) == 0:
             eval_agent_with_logging(agent=agent,
-                       env_id=args.env_id,
-                       eval_episodes=args.eval_episodes,
-                       run_name=run_name,
-                       global_step=global_step,
-                       device=device,
-                       writer=writer)
+                                    env_id=args.env_id,
+                                    eval_episodes=args.eval_episodes,
+                                    run_name=run_name,
+                                    global_step=global_step,
+                                    device=device,
+                                    writer=writer)
 
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -143,8 +144,10 @@ def main(args: Args):
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
 
-                cascade_delta = rewards[t].unsqueeze(-1) + args.gamma*nextcascade_values*nextnonterminal.unsqueeze(-1) - cascade_values[t]
-                cascade_advantages[t] = cascade_lastgaelam = cascade_delta + args.gamma*args.gae_lambda * nextnonterminal.unsqueeze(-1)*cascade_lastgaelam
+                cascade_delta = rewards[t].unsqueeze(-1) + gammas_tensor.unsqueeze(
+                    0) * nextcascade_values * nextnonterminal.unsqueeze(-1) - cascade_values[t]
+                cascade_advantages[t] = cascade_lastgaelam = cascade_delta + gammas_tensor.unsqueeze(
+                    0) * args.gae_lambda * nextnonterminal.unsqueeze(-1) * cascade_lastgaelam
 
             returns = advantages + values
             cascade_returns = cascade_advantages + cascade_values
@@ -153,7 +156,7 @@ def main(args: Args):
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        b_advantages = advantages.reshape(-1)
+        b_advantages = cascade_advantages[:,:,-1].reshape(-1) # advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
         b_value_heads = cascade_values.reshape(-1, num_gammas)
@@ -205,7 +208,7 @@ def main(args: Args):
                     v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
                     v_loss = 0.5 * v_loss_max.mean()
 
-                    cascade_v_loss_unclipped = (newcascade_values - b_cascade_returns[mb_inds])**2
+                    cascade_v_loss_unclipped = (newcascade_values - b_cascade_returns[mb_inds]) ** 2
                     cascade_v_clipped = b_value_heads[mb_inds] + torch.clamp(
                         newcascade_values - b_value_heads[mb_inds],
                         -args.clip_coef,
@@ -217,7 +220,7 @@ def main(args: Args):
                     cascade_v_loss = 0.5 * cascade_v_loss_max.mean(0)
                 else:
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
-                    cascade_v_loss = 0.5 * ((newcascade_values - b_cascade_returns[mb_inds])**2).mean(0)
+                    cascade_v_loss = 0.5 * ((newcascade_values - b_cascade_returns[mb_inds]) ** 2).mean(0)
 
                 entropy_loss = entropy.mean()
                 loss = pg_loss - args.ent_coef * entropy_loss + (v_loss.mean() + cascade_v_loss.mean()) * args.vf_coef
@@ -252,12 +255,12 @@ def main(args: Args):
         save_model(run_name, global_step, args.exp_name, agent)
 
     eval_agent_with_logging(agent=agent,
-               env_id=args.env_id,
-               eval_episodes=args.eval_episodes,
-               run_name=run_name,
-               global_step=global_step,
-               device=device,
-               writer=writer)
+                            env_id=args.env_id,
+                            eval_episodes=args.eval_episodes,
+                            run_name=run_name,
+                            global_step=global_step,
+                            device=device,
+                            writer=writer)
 
     # if args.upload_model:
     #     from cleanrl_utils.huggingface import push_to_hub
@@ -270,7 +273,7 @@ def main(args: Args):
     writer.close()
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     args = tyro.cli(Args)
     if args.mode == Mode.TRAIN:
         main(args)
