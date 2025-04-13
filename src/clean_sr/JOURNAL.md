@@ -14,7 +14,7 @@ April 13, 2025
   decreases, it plateaus early and doesn't make any more progress.
   - Factored out `compute_returns` and added a unit test.
   - Right now we've got a problem with the SR blowing up.
-
+  - Next step: I started creating tests for the training step.
 
 - General thought, I don't understand how other developers seem to write code in this way where everything is just
  written in a single flow - I want to split things up so they can be easily tested with unit tests.
