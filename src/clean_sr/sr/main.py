@@ -44,16 +44,17 @@ def training_step(
 
     :param args:
     :param agent:
-    :param obs:
-    :param logprobs:
-    :param actions:
-    :param advantages:
-    :param returns:
-    :param rewards:
+    :param obs: [batch, num_envs, obs_dim]
+    :param logprobs: [batch, num_envs]
+    :param actions: [batch, num_envs, action_dim]
+    :param advantages: [batch, num_envs]
+    :param returns: [batch, num_envs]
+    :param rewards: [batch, num_envs]
         We need the raw rewards to be able to learn the one-step expected reward
-    :param sf_targets:
+    :param sf_targets: [batch, num_envs, phi_dim]
         An SF target is the bootstrapped return for the SF
-    :param values:
+    :param sf_predictions: [batch, num_envs, phi_dim]
+    :param values: [batch, num_envs]
     :param optimizer:
     :param obs_space:
     :param action_space:
@@ -67,8 +68,8 @@ def training_step(
     b_returns = returns.reshape(-1)
     b_values = values.reshape(-1)
     b_rewards = rewards.reshape(-1)
-    b_sf_targets = sf_targets.reshape((-1, args.phi_size))
-    b_sf_predictions = sf_predictions.reshape((-1, args.phi_size))
+    b_sf_targets = sf_targets.reshape(-1, args.phi_size)
+    b_sf_predictions = sf_predictions.reshape(-1, args.phi_size)
 
     # Optimizing the policy and value network
     b_inds = np.arange(args.batch_size)
@@ -326,7 +327,18 @@ def main(args: Args):
             next_value = critic_output.value.reshape(-1)
             next_sf = critic_output.sf
 
-            returns, advantages, sf_targets = compute_returns(rewards, phis, dones, values, sf_predictions, next_done, next_value, next_sf, device)
+            returns, advantages, sf_targets = compute_returns(rewards=rewards,
+                                                              phis=phis,
+                                                              dones=dones,
+                                                              values=values,
+                                                              sf_predictions=sf_predictions,
+                                                              next_done=next_done,
+                                                              next_value=next_value,
+                                                              next_sf=next_sf,
+                                                              gamma=args.gamma,
+                                                              gae_lambda=args.gae_lambda,
+                                                              num_steps=args.num_steps,
+                                                              device=device)
 
             # advantages = torch.zeros_like(rewards).to(device)
             # sf_targets = torch.zeros_like(phis).to(device)

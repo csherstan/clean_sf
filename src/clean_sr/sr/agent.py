@@ -30,6 +30,20 @@ class SROutput:
     Standard value estimate
     """
 
+class StandardCritic(nn.Module):
+    def __init__(self, obs_space_shape, action_space_shape):
+        super().__init__()
+        self.neck = nn.Sequential(
+            layer_init(nn.Linear(np.array(obs_space_shape).prod(), 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 1)),
+        )
+
+    def forward(self, x) -> torch.Tensor:
+        return self.neck(x)
+
 class SRCritic(nn.Module):
     def __init__(self, obs_space_shape, action_space_shape, phi_size: int):
         super().__init__()

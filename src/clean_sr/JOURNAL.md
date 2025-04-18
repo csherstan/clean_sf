@@ -1,3 +1,15 @@
+April 18, 2025
+- I've been working on train_an_sr.py, which trains both a standard model and a successor representation model.
+- It all works, but it's not showing the benefits I was expecting. I believe that understand the reasons for this.
+I'm using the full return. So in a setting were I do my updates against the full return I actually do have training
+signal at each timestep.
+
+
+April 14, 2025
+
+- Today I was working on creating a test to train an SR on a square wave signal.
+- At present the test runs, but the losses are all nan.
+
 April 13, 2025
 
 - cascade:
