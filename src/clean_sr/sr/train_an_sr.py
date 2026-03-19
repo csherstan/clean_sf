@@ -5,9 +5,11 @@ import torch
 import gymnasium as gym
 import tqdm
 
+
 def normalize(x: torch.Tensor) -> torch.Tensor:
     mean, var = torch.mean(x, dim=0), torch.var(x, dim=0)
     return (x - mean) / torch.sqrt(var + 1e-8)
+
 
 def compute_correlation(x: torch.Tensor, y: torch.Tensor) -> float:
     """
@@ -19,14 +21,31 @@ def compute_correlation(x: torch.Tensor, y: torch.Tensor) -> float:
     assert x.shape == y.shape
     x = normalize(x.flatten())
     y = normalize(y.flatten())
-    return (x*y).mean()
+    return (x * y).mean()
+
+
+def compute_one_step_target(rewards: torch.Tensor,
+                            dones: torch.Tensor,
+                            values: torch.Tensor,
+                            next_done: torch.Tensor,
+                            next_value: torch.Tensor,
+                            gamma: float,
+                            device) -> torch.Tensor:
+
+    # TODO: not using done
+    targets = torch.zeros_like(rewards, device=device)
+    targets[0:-1] = rewards[0:-1] + gamma * values[1:]
+    targets[-1] = rewards[-1] + gamma * next_value
+
+    return targets
+
 
 def compute_standard_returns(rewards: torch.Tensor,
-                    dones: torch.Tensor,
-                    next_done: torch.Tensor,
-                    next_value,
-                    gamma: float,
-                    device) -> torch.Tensor:
+                             dones: torch.Tensor,
+                             next_done: torch.Tensor,
+                             next_value,
+                             gamma: float,
+                             device) -> torch.Tensor:
     """
     :param rewards: Shape [batch, num_envs]
     :param dones:   Shape [batch, num_envs]
@@ -38,7 +57,7 @@ def compute_standard_returns(rewards: torch.Tensor,
     returns = torch.zeros_like(rewards, device=device)
     num_steps = rewards.shape[0]
 
-    g_rewards = next_value*(1.-next_done)
+    g_rewards = next_value * (1. - next_done)
     non_terminal = 1. - dones
 
     for t in reversed(range(num_steps)):
@@ -49,12 +68,12 @@ def compute_standard_returns(rewards: torch.Tensor,
 
 
 def compute_sr_returns(rewards: torch.Tensor,
-                    phis: torch.Tensor,
-                    dones: torch.Tensor,
-                    next_done: torch.Tensor,
-                    next_value, next_sf: torch.Tensor,
-                    gamma: float,
-                    device) -> tuple[torch.Tensor, torch.Tensor]:
+                       phis: torch.Tensor,
+                       dones: torch.Tensor,
+                       next_done: torch.Tensor,
+                       next_value, next_sf: torch.Tensor,
+                       gamma: float,
+                       device) -> tuple[torch.Tensor, torch.Tensor]:
     """
 
     :param rewards: Shape [batch, num_envs]
@@ -72,8 +91,8 @@ def compute_sr_returns(rewards: torch.Tensor,
     sf_targets = torch.zeros_like(phis, device=device)
     num_steps = rewards.shape[0]
 
-    g_rewards = next_value*(1.-next_done)
-    g_sf = next_sf*(1.-next_done)
+    g_rewards = next_value * (1. - next_done)
+    g_sf = next_sf * (1. - next_done)
 
     non_terminal = 1. - dones
 
@@ -85,9 +104,10 @@ def compute_sr_returns(rewards: torch.Tensor,
 
     return returns, sf_targets
 
-if __name__=="__main__":
 
-    gamma = 0.8
+if __name__ == "__main__":
+
+    gamma = 0.9
     gae_lambda = 0.95
     phi_size = 10
     value_weight = 0.5
@@ -107,16 +127,14 @@ if __name__=="__main__":
         phi_size=phi_size,
     )
 
-
     # prep data -------------------
-    num_steps = 200
+    num_steps = 500
     obs = torch.arange(0, end=num_steps, dtype=torch.float32).to(device) / num_steps
     obs = obs.view(-1, 1).detach()
     rewards = torch.zeros((num_steps, 1), device=device).detach()
-    rewards[100:110] = 1.0
+    rewards[-10:] = 1.0
     # rewards = torch.zeros((num_steps, 1)).to(device).detach()
     # rewards[int(num_steps / 2):] = 1.0
-
 
     dones = torch.zeros((num_steps, 1)).to(device).detach()
 
@@ -135,6 +153,7 @@ if __name__=="__main__":
 
     step_results = []
 
+
     def plot_predictions(step_count: int) -> None:
         with torch.no_grad():
             sr_result = sr_critic.forward(obs)
@@ -152,12 +171,13 @@ if __name__=="__main__":
         plt.tight_layout()
         plt.show()
 
+
     plot_predictions(0)
 
-    for epoch in tqdm(range(20000)):
+    for epoch in tqdm.tqdm(range(20000)):
         step_result = {}
 
-        #-------- SR training
+        # -------- SR training
         result = sr_critic.forward(obs)
         values = result.value
         phis = result.phi
@@ -167,21 +187,32 @@ if __name__=="__main__":
         step_result["sf_correlation"] = compute_correlation(values, true_returns.unsqueeze(-1)).item()
         step_result["sf_MSE"] = torch.nn.functional.mse_loss(values, true_returns.unsqueeze(-1)).item()
 
-        returns, sf_targets = compute_sr_returns(
-            rewards=rewards,
-            phis=phis,
-            dones=dones,
-            next_done=dones[0],
-            next_value=values[0].detach(),
-            next_sf=sf_predictions[0].detach(),
-            gamma=gamma,
-            device=device
-        )
+        returns = compute_one_step_target(rewards=rewards,
+                                          dones=dones,
+                                          values=values,
+                                          next_done=dones[0], next_value=values[0].detach(), gamma=gamma, device=device)
 
-        sf_loss = (0.5*(sf_predictions - sf_targets.detach())**2).mean()
-        value_loss = (0.5*(values - returns.detach())**2).mean()
-        reward_loss = (0.5*(predicted_rewards - rewards)**2).mean()
-        loss = sf_loss*sf_weight + value_loss*value_weight + reward_loss*reward_weight
+        sf_targets = compute_one_step_target(rewards=phis,
+                                             dones=dones,
+                                             values=sf_predictions,
+                                             next_done=dones[0], next_value=sf_predictions[0].detach(), gamma=gamma,
+                                             device=device)
+
+        # returns, sf_targets = compute_sr_returns(
+        #     rewards=rewards,
+        #     phis=phis,
+        #     dones=dones,
+        #     next_done=dones[0],
+        #     next_value=values[0].detach(),
+        #     next_sf=sf_predictions[0].detach(),
+        #     gamma=gamma,
+        #     device=device
+        # )
+
+        sf_loss = (0.5 * (sf_predictions - sf_targets.detach()) ** 2).mean()
+        value_loss = (0.5 * (values - returns.detach()) ** 2).mean()
+        reward_loss = (0.5 * (predicted_rewards - rewards) ** 2).mean()
+        loss = sf_loss * sf_weight + value_loss * value_weight + reward_loss * reward_weight
         sr_optimizer.zero_grad()
         loss.backward()
         sr_optimizer.step()
@@ -192,22 +223,24 @@ if __name__=="__main__":
             "sf_reward_loss": reward_loss.item(),
         })
 
-
-        #-------- Standard training
+        # -------- Standard training
         values = standard_critic(obs)
         step_result["standard_correlation"] = compute_correlation(values, true_returns.unsqueeze(-1)).item()
         step_result["standard_MSE"] = torch.nn.functional.mse_loss(values, true_returns.unsqueeze(-1)).item()
 
-        returns = compute_standard_returns(
-            rewards=rewards,
-            dones=dones,
-            next_done=dones[0],
-            next_value=values[0].detach(),
-            gamma=gamma,
-            device=device
-        )
+        returns = compute_one_step_target(rewards=rewards, values=values, dones=dones, next_done=dones[0],
+                                          next_value=values[0].detach(), gamma=gamma, device=device)
 
-        value_loss = (0.5*(values - returns.detach())**2).mean()
+        # returns = compute_standard_returns(
+        #     rewards=rewards,
+        #     dones=dones,
+        #     next_done=dones[0],
+        #     next_value=values[0].detach(),
+        #     gamma=gamma,
+        #     device=device
+        # )
+
+        value_loss = (0.5 * (values - returns.detach()) ** 2).mean()
         standard_optimizer.zero_grad()
         value_loss.backward()
         standard_optimizer.step()
@@ -215,7 +248,6 @@ if __name__=="__main__":
         step_result["standard_value_loss"] = value_loss.item()
 
         step_results.append(step_result)
-
 
     results_dict = {}
     for step_result in step_results:
@@ -246,10 +278,4 @@ if __name__=="__main__":
     plt.tight_layout()
     plt.show()
 
-
     plot_predictions(epoch)
-
-
-
-
-
